@@ -1,5 +1,5 @@
 
-from typing import TypeVar, Generic, Union
+from typing import TypeVar, Generic, Optional
 
 T = TypeVar('T')
 
@@ -10,7 +10,7 @@ class Map( Generic[ T ] ):
     def __init__( self ):
         self.data = {}
 
-    def get( self, key: str ) -> Union[ Generic[ T ], None ] :
+    def get( self, key: str ) -> Optional[ T ] :
         """
         Get the property by `key`.
         """

@@ -1,16 +1,17 @@
 
-import websocket
-import typing as type
+import websockets
+import typing
 import json
+import asyncio
 
-import types.clientOptions as clientOptions
-from emitter import EventEmitter
+from .types.clientOptions import ClientOptions
+from .emitter import EventEmitter
 
-from types.p2pquakes.earthquakeReport import EarthquakeReports
-from types.p2pquakes.eew import EEW
-from types.p2pquakes.tsunami import Tsunami
+from .types.p2pquakes.earthquakeReport import EarthquakeReports
+from .types.p2pquakes.eew import EEW
+from .types.p2pquakes.tsunami import Tsunami
 
-from utils.cache import DataCacheManager
+from .utils.cache import DataCacheManager
 
 class Client( EventEmitter ):
     """
@@ -33,6 +34,7 @@ class Client( EventEmitter ):
         async def earthquake( data: EarthquakeReports ):
             print(f' hypocenterName: {data.earthquake.hypocenter.name} ')
 
+        # Simply call start() - asyncio is handled automatically
         client.start()
     ```
 
@@ -47,7 +49,7 @@ class Client( EventEmitter ):
 
         Start the websocket client.
 
-        ⚠️ If you wanna use this function, you must call this function at the end of the script.
+        ⚠️ Automatically handles asyncio event loop. You can simply call client.start().
 
     ## Events
     - `ready() -> None` : Emitted when the websocket client is connected to the server.
@@ -55,38 +57,62 @@ class Client( EventEmitter ):
     - `eew( data: EEW ) -> None` : Emitted when the websocket client receives an EEW report.
 
     """
-    option: clientOptions.ClientOptions
-    ws: websocket.WebSocketApp
+    option: ClientOptions
+    ws: typing.Optional[websockets.WebSocketServerProtocol] = None
     isReady: bool = False
     cache : DataCacheManager
 
     def __init__( 
             self, 
-            isDebug: type.Optional[bool] = False, 
-            isSandbox: type.Optional[bool] = False 
+            isDebug: typing.Optional[bool] = False, 
+            isSandbox: typing.Optional[bool] = False 
     ) -> None:
         super().__init__()
-        self.option = clientOptions.ClientOptions(
+        self.option = ClientOptions(
             isDebug,
             isSandbox
         )
-        self.cache = DataCacheManager()
+        # self.cache = DataCacheManager()
 
 
     def start( self ):
-        self.ws = websocket.WebSocketApp( 
-            self.__get_ws_url__(),
-            on_open=self.__on_ready,
-            on_message=self.__on_message,
-            on_error=self.__on_error,
-            on_close=self.__on_close
-        )
-        self.ws.run_forever()
+        """
+        Start the websocket client connection.
+        Automatically runs in asyncio event loop.
+        """
+        # Check if there's already a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're already in an async context, create a task
+            task = loop.create_task(self._start_async())
+            return task
+        except RuntimeError:
+            # No running loop, so we can use asyncio.run()
+            return asyncio.run(self._start_async())
 
-    def __on_ready( 
-            self, 
-            ws: websocket.WebSocketApp 
-    ) -> None:
+    async def _start_async( self ):
+        """
+        Internal async start method.
+        """
+        uri = self.__get_ws_url__()
+        self.__debug_message__(f"[client] Connecting to {uri}")
+        
+        try:
+            async with websockets.connect(uri) as websocket:
+                self.ws = websocket
+                await self.__on_ready()
+                
+                async for message in websocket:
+                    await self.__on_message(message)
+                    
+        except websockets.exceptions.ConnectionClosed:
+            self.__debug_message__(f"[client -> ws] Connection closed")
+            await self.__on_close()
+        except Exception as error:
+            self.__debug_message__(f"[client -> ws] Error occurred: {error}")
+            await self.__on_error(error)
+
+    async def __on_ready( self ) -> None:
         """
         @private
         on_open event handler. ( ready )
@@ -95,21 +121,17 @@ class Client( EventEmitter ):
         """
         self.isReady = True;
         self.__debug_message__(f"[client -> ws] connected to the websocket server. (url: {self.__get_ws_url__()})")
-        self.emit('ready')
+        await self.emit('ready')
         pass;
 
-    def __on_message( 
-            self, 
-            ws: websocket.WebSocketApp, 
-            message: any 
-    ) -> None:
+    async def __on_message( self, message: str ) -> None:
         """
         @private
         on_message event handler.
 
         This function is called when the websocket client receives a message from the server.
         """
-        self.emit('rawmessage', message)
+        await self.emit('rawmessage', message)
         try:
             # 最初はdictにする
             data = json.loads( message )
@@ -118,19 +140,19 @@ class Client( EventEmitter ):
             # 551 ・・・ 地震情報（震源・震度・各地の震度）
             if data['code'] == 551:
                 dataClass = EarthquakeReports( data )
-                self.emit('earthquake', dataClass )
+                await self.emit('earthquake', dataClass )
                 self.cache.set( dataClass._id, dataClass )
             
             # 552 ・・・ 津波予報
             if data['code'] == 552:
                 dataClass = Tsunami( data )
-                self.emit('tsunami', dataClass )
+                await self.emit('tsunami', dataClass )
                 self.cache.set( dataClass._id, dataClass )
 
             # 556 ・・・ 緊急地震速報 配信データ
             if data['code'] == 556:
                 dataClass = EEW( data )
-                self.emit('eew', dataClass )
+                await self.emit('eew', dataClass )
                 self.cache.set( dataClass._id, dataClass )
 
         except Exception as e:
@@ -138,21 +160,16 @@ class Client( EventEmitter ):
             self.__debug_message__( e )
         pass;
     
-    def __on_error( 
-            self, 
-            ws: websocket.WebSocketApp, 
-            error: any 
-    ) -> None:
+    async def __on_error( self, error: typing.Any ) -> None:
         self.__debug_message__(f"[client -> ws] error occurred. (url: {self.__get_ws_url__()})")
         self.__debug_message__( error )
+        await self.emit('error', error)
         pass;
     
-    def __on_close( 
-            self, 
-            ws: websocket.WebSocketApp, 
-            *args 
-    ) -> None:
+    async def __on_close( self ) -> None:
         self.__debug_message__(f"[client -> ws] disconnected from the websocket server. (url: {self.__get_ws_url__()})")
+        self.isReady = False
+        await self.emit('close')
         pass;
 
     

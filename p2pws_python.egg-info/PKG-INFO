@@ -17,6 +17,7 @@ Classifier: Programming Language :: Python :: 3.6
 Classifier: Topic :: Software Development :: Libraries :: Python Modules
 License-File: LICENCE
 Requires-Dist: asyncio
+Requires-Dist: websockets
 Requires-Dist: websocket-client
 Dynamic: author
 Dynamic: author-email

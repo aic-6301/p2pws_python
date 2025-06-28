@@ -1,9 +1,9 @@
-import typing as type
+import typing
 import asyncio
 
-T = type.TypeVar('T')
-Coro = type.Coroutine[type.Any, type.Any, T]
-CallableCoroutine = type.TypeVar("CallableCoroutine", bound=type.Callable[..., Coro ])
+T = typing.TypeVar('T')
+Coro = typing.Coroutine[typing.Any, typing.Any, T]
+CallableCoroutine = typing.TypeVar("CallableCoroutine", bound=typing.Callable[..., Coro ])
 
 class EventEmitter:
     """
@@ -50,7 +50,7 @@ class EventEmitter:
         - `None
     """
     def __init__( self ) -> None:
-        self._listeners: type.Dict[str, type.List[type.Tuple[ asyncio.Future, type.Callable[..., bool ]]]] = {}
+        self._listeners: typing.Dict[str, typing.List[typing.Tuple[ asyncio.Future, typing.Callable[..., bool ]]]] = {}
         """
         thanks to discord.py :)
         """
@@ -67,10 +67,10 @@ class EventEmitter:
         return f
         
 
-    def emit(self, event: str, *args ) -> None:
+    async def emit(self, event: str, *args ) -> None:
         if hasattr(self, event):
             listener = getattr(self, event)
             if listener:
-                asyncio.run(listener(*args))
+                await listener(*args)
             else:
                 print(f'[EventEmitter] Event {event} has no listeners :( ')
