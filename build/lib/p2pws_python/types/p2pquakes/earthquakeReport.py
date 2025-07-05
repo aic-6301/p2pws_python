@@ -77,7 +77,7 @@ class EarthquakeReports ( BasicData ):
     ver: str
 
     def __init__( self, jsonObject: dict ) -> None:
-        self._id = jsonObject["_id"]
+        self._id = jsonObject["_id"] or jsonObject["id"]
         self.earthquake = Earthquake( jsonObject["earthquake"] )
         self.issue = Issue( jsonObject["issue"] )
         self.points = [ Point( point ) for point in jsonObject["points"] ]
