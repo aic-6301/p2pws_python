@@ -3,7 +3,7 @@ from .types import *
 from .utils import *
 
 __copyright__    = 'Copyright (C) 2024 akikaki'
-__version__      = '1.1.0'
+__version__      = '1.1.1'
 __license__      = 'MIT'
 __author__       = 'akikaki'
 __author_email__ = 'hello@akikaki.net'

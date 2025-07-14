@@ -90,27 +90,37 @@ class Client( EventEmitter ):
             # No running loop, so we can use asyncio.run()
             return asyncio.run(self._start_async())
 
-    async def _start_async( self ):
+    async def _start_async( self, max_retries: int = 10, retry_interval: float = 5.0 ):
         """
-        Internal async start method.
+        Internal async start method with auto-reconnect.
+        max_retries: 最大再接続回数（Noneで無限）
+        retry_interval: 再接続までの待機秒数
         """
         uri = self.__get_ws_url__()
-        self.__debug_message__(f"[client] Connecting to {uri}")
-        
-        try:
-            async with websockets.connect(uri) as websocket:
-                self.ws = websocket
-                await self.__on_ready()
-                
-                async for message in websocket:
-                    await self.__on_message(message)
-                    
-        except websockets.exceptions.ConnectionClosed:
-            self.__debug_message__(f"[client -> ws] Connection closed")
-            await self.__on_close()
-        except Exception as error:
-            self.__debug_message__(f"[client -> ws] Error occurred: {error}")
-            await self.__on_error(error)
+        retries = 0
+        while True:
+            self.__debug_message__(f"[client] Connecting to {uri} (try {retries+1})")
+            try:
+                async with websockets.connect(uri) as websocket:
+                    self.ws = websocket
+                    await self.__on_ready()
+                    async for message in websocket:
+                        await self.__on_message(message)
+                self.__debug_message__(f"[client -> ws] Connection closed normally")
+                await self.__on_close()
+                break  # 正常終了ならループ脱出
+            except websockets.exceptions.ConnectionClosed:
+                self.__debug_message__(f"[client -> ws] Connection closed unexpectedly. Reconnecting...")
+                await self.__on_close()
+            except Exception as error:
+                self.__debug_message__(f"[client -> ws] Error occurred: {error}. Reconnecting...")
+                await self.__on_error(error)
+            retries += 1
+            if max_retries is not None and retries >= max_retries:
+                self.__debug_message__(f"[client] Max retries reached. Giving up.")
+                break
+            self.__debug_message__(f"[client] Waiting {retry_interval} seconds before reconnect...")
+            await asyncio.sleep(retry_interval)
 
     async def __on_ready( self ) -> None:
         """
