@@ -16,6 +16,6 @@ class BasicData:
     """
 
     def __init__( self, data: dict ) -> None:
-        self._id = data['_id']
+        self._id = data.get("_id", data.get("id", None))
         self.code = data['code']
         self.time = data['time']

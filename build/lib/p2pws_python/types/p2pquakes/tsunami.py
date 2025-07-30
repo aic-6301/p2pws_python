@@ -10,11 +10,20 @@ class TsunamiIssue:
     _type: str
     """発表種別。現在はFocus(津波予報)のみ。"""
     
+    def __init__( self, data: dict ) -> None:
+        self.source = data["source"]
+        self.time = data["time"]
+        self._type = data["type"]
+    
 class FirstHeight:
     """津波の到達予想時刻"""
     arrivalTime: str
     """第一波の到達予想時刻"""
     condition: Literal["ただちに津波来襲と予測", "津波到達中と推測", "第１波の到達を確認"]
+    
+    def __init__( self, data: dict ) -> None:
+        self.arrivalTime = data["arrivalTime"]
+        self.condition = data.get("condition", None)
     
 class MaxHeight:
     """予想される津波の高さ"""
@@ -22,6 +31,10 @@ class MaxHeight:
     """高さの文字列表現"""
     value: float
     """高さの数値表現"""
+    
+    def __init__( self, data: dict ) -> None:
+        self.description = data["description"]
+        self.value = data["value"]
     
 class TsunamiArea:
     """津波予報の地域情報です。"""
@@ -33,6 +46,13 @@ class TsunamiArea:
     """津波予報区名"""
     firstHeight: FirstHeight
     maxHeight: MaxHeight
+    
+    def __init__( self, data: dict ) -> None:
+        self.grade = data["grade"]
+        self.immediate = data["immediate"]
+        self.name = data["name"]
+        self.firstHeight = FirstHeight(data["firstHeight"])
+        self.maxHeight = MaxHeight(data["maxHeight"])
 
 class Tsunami ( BasicData ):
     """
@@ -63,7 +83,7 @@ class Tsunami ( BasicData ):
 
     def __init__( self, data: dict ) -> None:
         super().__init__(data)
-        self._id = data["id"]
+        self._id = data["_id"] or data["id"]
         self.code = data["code"]
         self.cancelled = data["cancelled"]
         self.issue = TsunamiIssue(data["issue"])
