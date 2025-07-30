@@ -1,184 +1,227 @@
-
-import websockets
-import typing
-import json
 import asyncio
-
-from .types.clientOptions import ClientOptions
-from .emitter import EventEmitter
+import inspect
+import websockets
+import logging
+import json
+import traceback
 
 from .types.p2pquakes.earthquakeReport import EarthquakeReports
 from .types.p2pquakes.eew import EEW
 from .types.p2pquakes.tsunami import Tsunami
 
-from .utils.cache import DataCacheManager
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-class Client( EventEmitter ):
-    """
-    Represents the p2pquake websocket client.
+class EventHandler:
+    def __init__(self, client):
+        self._handlers = {}
+        self.client = client
+        self._code_map = {
+            551: ("on_earthquake", EarthquakeReports),  # 地震情報
+            556: ("on_eew", EEW),                       # 緊急地震速報
+            552: ("on_tsunami", Tsunami),               # 津波予報
+        }
+        # 特別なイベント（接続関連）
+        self._connection_events = ["on_ready", "on_disconnect", "on_reconnect"]
 
-    ## Examples
-    - A simple example of using the Client class.
+    def register(self, name, func):
+        self._handlers[name] = func
 
-    ```
-        from src.client import Client
-        from src.types.p2pquakes.earthquakeReport import EarthquakeReports
+    def get(self, name):
+        return self._handlers.get(name)
+    
+    async def _fire_event(self, event_name: str, *args):
+        """接続関連のイベントを発火"""
+        handler = self.get(event_name)
+        if handler:
+            try:
+                if inspect.iscoroutinefunction(handler):
+                    await handler(*args)
+                else:
+                    handler(*args)
+            except Exception as e:
+                print(f"[EventError] {event_name}: {e}")
+                traceback.print_exc()
 
-        client = Client()
+    def resolve_event(self, data_dict: dict):
+        event_type = data_dict.get("code")
+        return self._code_map.get(event_type, ("on_message", dict))  # デフォルトはon_messageにdict
 
-        @client.on
-        async def ready() -> None:
-            print('ready client :)')
-
-        @client.on
-        async def earthquake( data: EarthquakeReports ):
-            print(f' hypocenterName: {data.earthquake.hypocenter.name} ')
-
-        # Simply call start() - asyncio is handled automatically
-        client.start()
-    ```
-
-    ## ClientOptions
-    - `isDebug` : `bool`
-        Whether to output debug messages.
-    - `isSandbox` : `bool`
-        Whether to use the sandbox server.
-
-    ## Functions
-    - `start() -> None`
-
-        Start the websocket client.
-
-        ⚠️ Automatically handles asyncio event loop. You can simply call client.start().
-
-    ## Events
-    - `ready() -> None` : Emitted when the websocket client is connected to the server.
-    - `earthquake( data: EarthquakeReports ) -> None` : Emitted when the websocket client receives an earthquake report.
-    - `eew( data: EEW ) -> None` : Emitted when the websocket client receives an EEW report.
-
-    """
-    option: ClientOptions
-    ws: typing.Optional[websockets.WebSocketServerProtocol] = None
-    isReady: bool = False
-    cache : DataCacheManager
-
-    def __init__( 
-            self, 
-            isDebug: typing.Optional[bool] = False, 
-            isSandbox: typing.Optional[bool] = False 
-    ) -> None:
-        super().__init__()
-        self.option = ClientOptions(
-            isDebug,
-            isSandbox
-        )
-        # self.cache = DataCacheManager()
-
-
-    def start( self ):
-        """
-        Start the websocket client connection.
-        Automatically runs in asyncio event loop.
-        """
-        # Check if there's already a running event loop
+    async def dispatch(self, raw_data):
         try:
-            loop = asyncio.get_running_loop()
-            # If we're already in an async context, create a task
-            task = loop.create_task(self._start_async())
-            return task
-        except RuntimeError:
-            # No running loop, so we can use asyncio.run()
-            return asyncio.run(self._start_async())
+            data_dict = json.loads(raw_data)
 
-    async def _start_async( self ):
-        """
-        Internal async start method.
-        """
-        uri = self.__get_ws_url__()
-        self.__debug_message__(f"[client] Connecting to {uri}")
-        
-        try:
-            async with websockets.connect(uri) as websocket:
-                self.ws = websocket
-                await self.__on_ready()
-                
-                async for message in websocket:
-                    await self.__on_message(message)
-                    
-        except websockets.exceptions.ConnectionClosed:
-            self.__debug_message__(f"[client -> ws] Connection closed")
-            await self.__on_close()
-        except Exception as error:
-            self.__debug_message__(f"[client -> ws] Error occurred: {error}")
-            await self.__on_error(error)
+            event_name, expected_type = self.resolve_event(data_dict)
+            handler = self.get(event_name)
+            if not handler:
+                return  # ハンドラが登録されていなければ無視
 
-    async def __on_ready( self ) -> None:
-        """
-        @private
-        on_open event handler. ( ready )
+            # 型付きデータクラスに変換
+            if expected_type is dict:
+                args = (data_dict,)
+            else:
+                args = (expected_type(data_dict),)
 
-        This function is called when the websocket client is connected to the server.
-        """
-        self.isReady = True;
-        self.__debug_message__(f"[client -> ws] connected to the websocket server. (url: {self.__get_ws_url__()})")
-        await self.emit('ready')
-        pass;
-
-    async def __on_message( self, message: str ) -> None:
-        """
-        @private
-        on_message event handler.
-
-        This function is called when the websocket client receives a message from the server.
-        """
-        await self.emit('rawmessage', message)
-        try:
-            # 最初はdictにする
-            data = json.loads( message )
-            self.__debug_message__(f"[ws -> client] received data: {data['code']}")
-
-            # 551 ・・・ 地震情報（震源・震度・各地の震度）
-            if data['code'] == 551:
-                dataClass = EarthquakeReports( data )
-                await self.emit('earthquake', dataClass )
-                self.cache.set( dataClass._id, dataClass )
-            
-            # 552 ・・・ 津波予報
-            if data['code'] == 552:
-                dataClass = Tsunami( data )
-                await self.emit('tsunami', dataClass )
-                self.cache.set( dataClass._id, dataClass )
-
-            # 556 ・・・ 緊急地震速報 配信データ
-            if data['code'] == 556:
-                dataClass = EEW( data )
-                await self.emit('eew', dataClass )
-                self.cache.set( dataClass._id, dataClass )
+            if inspect.iscoroutinefunction(handler):
+                await handler(*args)
+            else:
+                handler(*args)
 
         except Exception as e:
-            self.__debug_message__(f"[client] json parsing error")
-            self.__debug_message__( e )
-        pass;
-    
-    async def __on_error( self, error: typing.Any ) -> None:
-        self.__debug_message__(f"[client -> ws] error occurred. (url: {self.__get_ws_url__()})")
-        self.__debug_message__( error )
-        await self.emit('error', error)
-        pass;
-    
-    async def __on_close( self ) -> None:
-        self.__debug_message__(f"[client -> ws] disconnected from the websocket server. (url: {self.__get_ws_url__()})")
-        self.isReady = False
-        await self.emit('close')
-        pass;
+            print(f"[DispatchError] {e}")
+            traceback.print_exc()
 
-    
-    def __debug_message__( 
-            self, 
-            message: str 
-    ) -> None:
-        if self.option.isDebug:
-            print( message )
 
-    def __get_ws_url__( self ):
-        return "wss://api.p2pquake.net/v2/ws" if not self.option.isSandBox else "wss://api-realtime-sandbox.p2pquake.net/v2/ws"
+class Client:
+    """
+    WebSocketクライアント
+    
+    :param  isSandbox: bool
+    地震情報の履歴を取得できます。
+    ※このオプションの使用は非推奨です。
+        
+    """
+    def __init__(self, isSandbox: bool = False, auto_reconnect: bool = True, reconnect_delay: float = 5.0):
+        self.isSandbox = isSandbox
+        self.auto_reconnect = auto_reconnect
+        self.reconnect_delay = reconnect_delay
+        self.handlers = EventHandler(self)
+        self.url = self.__get_url__()
+        self._task = None
+        self._running = False
+        self._connected = False
+        self._connection_lock = asyncio.Lock()
+
+    def event(self, func):
+        self.handlers.register(func.__name__, func)
+        return func
+
+    async def _single_connection(self):
+        """単一の接続を管理"""
+        try:
+            print(f"WebSocket接続を試行中: {self.url}")
+            async with websockets.connect(self.url, logger=logger) as ws:
+                print("WebSocket接続が確立されました")
+                self._connected = True
+                
+                # 接続成功イベントを発火
+                if not hasattr(self, '_ever_connected'):
+                    await self.handlers._fire_event("on_ready")
+                    self._ever_connected = True
+                else:
+                    await self.handlers._fire_event("on_reconnect")
+                
+                # メッセージ受信ループ
+                async for message in ws:
+                    if not self._running:
+                        break
+                    await self.handlers.dispatch(message)
+                        
+        except websockets.exceptions.ConnectionClosedError as e:
+            print(f"WebSocket接続が切断されました: {e}")
+            await self.handlers._fire_event("on_disconnect", str(e))
+            raise
+        except Exception as e:
+            print(f"WebSocket接続エラー: {e}")
+            await self.handlers._fire_event("on_disconnect", str(e))
+            raise
+        finally:
+            self._connected = False
+
+    async def _connect(self):
+        """再接続ロジックを含む接続管理"""
+        while self._running:
+            try:
+                await self._single_connection()
+                # 正常に切断された場合（_runningがFalseになった）はループを抜ける
+                if not self._running:
+                    break
+                    
+            except Exception:
+                # 接続エラーまたは切断が発生
+                if not self.auto_reconnect or not self._running:
+                    break
+                
+                print(f"{self.reconnect_delay}秒後に再接続を試行します...")
+                try:
+                    await asyncio.sleep(self.reconnect_delay)
+                except asyncio.CancelledError:
+                    break
+    
+    def __get_url__(self):
+        if self.isSandbox:
+            return "wss://api-realtime-sandbox.p2pquake.net/v2/ws"
+        return "wss://api.p2pquake.net/v2/ws"
+
+    @property
+    def is_connected(self):
+        return self._running and self._connected
+
+    async def start(self):
+        """WebSocket接続を開始します（discord.pyとの統合用）"""
+        async with self._connection_lock:
+            if self._running:
+                print("既に実行中です")
+                return
+                
+            self._running = True
+            try:
+                await self._connect()
+            except Exception as e:
+                print(f"WebSocket接続エラー: {e}")
+            finally:
+                self._running = False
+                self._connected = False
+
+    def run(self, loop=None):
+        """WebSocket接続を開始します（非同期でバックグラウンド実行）"""
+        # 既に実行中の場合は既存のタスクを返す
+        if self._running and self._task and not self._task.done():
+            print("既に実行中です")
+            return self._task
+            
+        # 現在のイベントループを取得（discord.pyのループを使用）
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # イベントループが実行中でない場合は新しく作成
+                return self.run_sync()
+        
+        # 前のタスクをクリーンアップ
+        if self._task and not self._task.done():
+            self._task.cancel()
+        
+        self._task = loop.create_task(self.start())
+        return self._task
+            
+    def run_sync(self):
+        """WebSocket接続を開始します（同期実行、ブロッキング）"""
+        if self._running:
+            print("既に実行中です")
+            return
+            
+        try:
+            asyncio.run(self.start())
+        except KeyboardInterrupt:
+            pass
+            
+    async def stop(self):
+        """WebSocket接続を停止します"""
+        async with self._connection_lock:
+            if not self._running:
+                print("既に停止しています")
+                return
+                
+            print("WebSocket接続を停止しています...")
+            self._running = False
+            
+            if self._task and not self._task.done():
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                    
+            self._connected = False
+            print("WebSocket接続が停止されました")

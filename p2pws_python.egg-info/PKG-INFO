@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: p2pws_python
-Version: 1.1.0
+Version: 1.1.2
 Summary: The client library for the P2PEarthquake Websocket API.
 Home-page: http://github.com/akikaki-bot/p2pws_python
 Author: akikaki
